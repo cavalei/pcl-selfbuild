@@ -41,15 +41,21 @@ jobs:
       - name: 编译
         shell: pwsh
         run: |
-          $msbuild = & "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe" `
-              -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
-              Select-Object -First 1
+          $msbuild = $null
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+          Write-Host "vswhere: $vswhere 存在=$(Test-Path $vswhere)"
+          if (Test-Path $vswhere) {
+              $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+          }
+          if (-not $msbuild) {
+              $cmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+              if ($cmd) { $msbuild = $cmd.Source }
+          }
           if (-not $msbuild) { throw "找不到 MSBuild" }
           Write-Host "MSBuild: $msbuild"
-          & $msbuild "pcl\Plain Craft Launcher 2.sln" `
-              /nologo /v:m /p:Configuration=Release "/p:Platform=Any CPU"
+          & $msbuild "pcl\Plain Craft Launcher 2.sln" /nologo /v:m /p:Configuration=Release "/p:Platform=Any CPU"
           if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码 $LASTEXITCODE" }
-
+          
       - name: 收集产物
         id: out
         shell: pwsh
