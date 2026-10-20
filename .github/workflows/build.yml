@@ -1,0 +1,75 @@
+name: build-pcl
+
+# 从官方源码编译一份解除下载限制的 PCL。
+# 只改一个常量：ModSecret.vb 里的 RestrictMcDownload = True → False
+# 其余源码保持原样，构建产物由 GitHub 的 Windows runner 生成。
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: 拉取 PCL 源码（含子模块）
+        shell: pwsh
+        run: |
+          git clone --recursive https://github.com/Meloong-Git/PCL.git pcl
+          if (-not (Test-Path pcl\MeloongCore\Shared\MeloongCore.csproj)) {
+            throw "子模块 MeloongCore 未拉取成功"
+          }
+
+      - name: 解除下载限制
+        shell: pwsh
+        run: |
+          $f = "pcl\Plain Craft Launcher 2\Modules\ModSecret.vb"
+          $t = [System.IO.File]::ReadAllText($f, [System.Text.Encoding]::UTF8)
+          $old = 'Public Const RestrictMcDownload As Boolean = True'
+          $new = 'Public Const RestrictMcDownload As Boolean = False'
+          if (-not $t.Contains($old)) { throw "没找到目标常量，源码可能已变动" }
+          $t = $t.Replace($old, $new)
+          [System.IO.File]::WriteAllText($f, $t, (New-Object System.Text.UTF8Encoding($true)))
+          Write-Host "已把 RestrictMcDownload 改为 False"
+          Select-String -LiteralPath $f -Pattern 'RestrictMcDownload As Boolean' | ForEach-Object { $_.Line.Trim() }
+
+      - name: 编译
+        shell: pwsh
+        run: |
+          $msbuild = & "${env:ProgramFiles}\Microsoft Visual Studio\Installer\vswhere.exe" `
+              -latest -requires Microsoft.Component.MSBuild -find MSBuild\**\Bin\MSBuild.exe |
+              Select-Object -First 1
+          if (-not $msbuild) { throw "找不到 MSBuild" }
+          Write-Host "MSBuild: $msbuild"
+          & $msbuild "pcl\Plain Craft Launcher 2.sln" `
+              /nologo /v:m /p:Configuration=Release "/p:Platform=Any CPU"
+          if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码 $LASTEXITCODE" }
+
+      - name: 收集产物
+        id: out
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem "pcl\Plain Craft Launcher 2\bin" -Filter "*.exe" -Recurse |
+                 Sort-Object Length -Descending | Select-Object -First 1
+          if (-not $exe) { throw "找不到编译产物" }
+          New-Item -ItemType Directory -Force -Path artifact | Out-Null
+          Copy-Item $exe.FullName "artifact\$($exe.Name)"
+          $hash = (Get-FileHash "artifact\$($exe.Name)" -Algorithm SHA256).Hash
+          Write-Host "$($exe.Name)  $($exe.Length) 字节"
+          Write-Host "SHA-256: $hash"
+          "name=$($exe.Name)" >> $env:GITHUB_OUTPUT
+          "sha256=$hash" >> $env:GITHUB_OUTPUT
+          "**$($exe.Name)**  $($exe.Length) 字节" >> $env:GITHUB_STEP_SUMMARY
+          "SHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: PCL-解除下载限制
+          path: artifact/*
+          if-no-files-found: error
