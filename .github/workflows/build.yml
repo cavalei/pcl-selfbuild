@@ -1,9 +1,5 @@
 name: build-pcl
 
-# 从官方源码编译一份解除下载限制的 PCL。
-# 只改一个常量：ModSecret.vb 里的 RestrictMcDownload = True → False
-# 其余源码保持原样，构建产物由 GitHub 的 Windows runner 生成。
-
 on:
   workflow_dispatch:
   push:
@@ -38,26 +34,38 @@ jobs:
           Write-Host "已把 RestrictMcDownload 改为 False"
           Select-String -LiteralPath $f -Pattern 'RestrictMcDownload As Boolean' | ForEach-Object { $_.Line.Trim() }
 
+      - name: 还原依赖
+        shell: pwsh
+        run: |
+          $projects = @(
+            "pcl\MeloongCore\Shared\MeloongCore.csproj",
+            "pcl\MeloongCore\Wpf\MeloongCore.Wpf.csproj",
+            "pcl\PCLCS\PCLCS.csproj"
+          )
+          foreach ($p in $projects) {
+            Write-Host "==> restore $p"
+            & dotnet restore $p
+            if ($LASTEXITCODE -ne 0) { throw "restore 失败：$p" }
+          }
+
       - name: 编译
         shell: pwsh
         run: |
           $msbuild = $null
           $vswhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
-          Write-Host "vswhere: $vswhere 存在=$(Test-Path $vswhere)"
           if (Test-Path $vswhere) {
-              $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
+            $msbuild = & $vswhere -latest -requires Microsoft.Component.MSBuild -find "MSBuild\**\Bin\MSBuild.exe" | Select-Object -First 1
           }
           if (-not $msbuild) {
-              $cmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
-              if ($cmd) { $msbuild = $cmd.Source }
+            $cmd = Get-Command msbuild.exe -ErrorAction SilentlyContinue
+            if ($cmd) { $msbuild = $cmd.Source }
           }
           if (-not $msbuild) { throw "找不到 MSBuild" }
           Write-Host "MSBuild: $msbuild"
           & $msbuild "pcl\Plain Craft Launcher 2.sln" /nologo /v:m /p:Configuration=Release "/p:Platform=Any CPU"
           if ($LASTEXITCODE -ne 0) { throw "编译失败，退出码 $LASTEXITCODE" }
-          
+
       - name: 收集产物
-        id: out
         shell: pwsh
         run: |
           $exe = Get-ChildItem "pcl\Plain Craft Launcher 2\bin" -Filter "*.exe" -Recurse |
@@ -68,10 +76,6 @@ jobs:
           $hash = (Get-FileHash "artifact\$($exe.Name)" -Algorithm SHA256).Hash
           Write-Host "$($exe.Name)  $($exe.Length) 字节"
           Write-Host "SHA-256: $hash"
-          "name=$($exe.Name)" >> $env:GITHUB_OUTPUT
-          "sha256=$hash" >> $env:GITHUB_OUTPUT
-          "**$($exe.Name)**  $($exe.Length) 字节" >> $env:GITHUB_STEP_SUMMARY
-          "SHA256: $hash" >> $env:GITHUB_STEP_SUMMARY
 
       - name: 上传产物
         uses: actions/upload-artifact@v4
